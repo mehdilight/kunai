@@ -2,7 +2,7 @@
 
 [![macOS](https://img.shields.io/badge/Platform-macOS%20(Apple%20Silicon%20%26%20Intel)-black)](https://apple.com)
 [![Rust](https://img.shields.io/badge/Language-Rust%202021-orange)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Kunai (苦無) is a high-performance, native macOS PlayStation 4 PKG extractor and shadPS4 package installer written in Rust.
 
@@ -202,9 +202,4 @@ New platforms (such as FreeBSD) can be added simply by implementing this trait i
 
 ## License
 
-Dual-licensed under either:
-
-* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-* MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
+Licensed under the MIT License ([LICENSE](LICENSE)).
