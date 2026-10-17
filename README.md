@@ -61,6 +61,43 @@ cargo install --path .
 
 ---
 
+## GUI File Explorer (GNOME Nautilus Style)
+
+Kunai includes a native desktop file explorer modeled after the **GNOME Files (Nautilus)** design language, featuring the Adwaita Dark palette, floating status pill, breadcrumb pathbar, and on-demand file inspection.
+
+### Launching the Explorer
+
+```bash
+# Launch the empty explorer (ready for drag-and-drop or file picker)
+kunai
+
+# Or explicitly with the GUI flag
+kunai --gui
+
+# Open a specific package directly in the explorer
+kunai --gui Game.pkg
+```
+
+### Explorer Features
+
+* **In-Memory Virtual Filesystem**: Reconstructs the entire nested directory tree in milliseconds by decrypting only the PFS superblock and inode tables without extracting the 50+ GB package to disk.
+* **GNOME Nautilus Design Language**:
+  * Adwaita Dark color tokens (`#242424` base, `#1e1e1e` view, `#303030` headerbar, `#3584e4` accent blue).
+  * Interactive pathbar breadcrumbs (`Root > sce_sys > ...`) with direct segment navigation.
+  * Dual view modes: toggleable **List View** (Name, Size, Type) and **Grid View** (centered icon cards).
+  * Nautilus-style floating status pill at the bottom displaying item counts and selection sizes.
+  * Real-time search filter bar for instant directory filtering.
+* **QuickLook Inspection Modal**:
+  * Double-clicking or previewing `icon0.png`, `pic0.png`, or `pic1.png` renders the image directly in-app.
+  * Inspecting `param.sfo` displays a structured table of all internal keys, values, and titles.
+  * Inspecting binaries or configuration files provides hex dump and text viewers.
+* **Selective and Full Extraction**:
+  * Extract individual files on-demand directly from the preview modal or right-click context menu.
+  * One-click "Install to shadPS4" button with background progress bar.
+* **Drag and Drop**: Drop any `.pkg` file into the window to immediately explore its filesystem.
+
+---
+
 ## Command-Line Usage
 
 ### 1. Extract a PKG to a Specific Directory
@@ -159,13 +196,20 @@ Options:
 kunai/
 ├── Cargo.toml
 ├── src/
-│   ├── main.rs                  # CLI entry point and progress bar driver
+│   ├── main.rs                  # Application entry point (GUI/CLI dispatcher)
 │   ├── lib.rs                   # Library root
 │   ├── cli.rs                   # Command-line interface definitions
+│   ├── gui/                     # GNOME Nautilus-style GUI explorer
+│   │   ├── mod.rs               # GUI exports and runner
+│   │   ├── app.rs               # Main application state and Nautilus view rendering
+│   │   ├── theme.rs             # Adwaita Dark palette and design tokens
+│   │   ├── widgets.rs           # Pathbar breadcrumbs, floating pill, file icons
+│   │   └── preview.rs           # QuickLook preview inspector (SFO, PNG, hex)
 │   ├── core/                    # OS-agnostic core algorithms
 │   │   ├── pkg.rs               # PKG container reader and type detector
 │   │   ├── psf.rs               # PSF (param.sfo) format parser
 │   │   ├── pfs.rs               # PFS/PFSC filesystem and Inode/Dirent tree
+│   │   ├── virtual_fs.rs        # In-memory virtual filesystem tree & on-demand reader
 │   │   ├── entry_types.rs       # Canonical sce_sys file ID mappings
 │   │   └── crypto/              # Cryptographic subsystem
 │   │       ├── keys.rs          # Embedded RSA keysets

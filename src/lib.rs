@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod core;
+pub mod gui;
 pub mod platform;
 
 pub use core::pkg::{Pkg, PkgHeader, PkgType, PKG_MAGIC};

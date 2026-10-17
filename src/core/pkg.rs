@@ -203,6 +203,20 @@ impl Pkg {
         })
     }
 
+    pub fn file_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+
+    pub fn file_seek(&mut self, pos: u64) -> Result<()> {
+        self.file.seek(SeekFrom::Start(pos))?;
+        Ok(())
+    }
+
+    pub fn file_read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
+        self.file.read_exact(buf)?;
+        Ok(())
+    }
+
     /// Determines the type of PKG (Base Game, Patch, or DLC).
     pub fn detect_type(&self) -> PkgType {
         // Check content flags for patch markers

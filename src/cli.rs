@@ -17,6 +17,10 @@ pub struct Cli {
     #[arg(value_hint = ValueHint::FilePath)]
     pub pkg_path: Option<PathBuf>,
 
+    /// Launch the interactive Nautilus-style GUI file explorer.
+    #[arg(short = 'g', long, help = "Launch GUI file explorer")]
+    pub gui: bool,
+
     /// Destination directory for extracted contents.
     /// If not provided and --install is not specified, extracts next to the PKG file.
     #[arg(value_hint = ValueHint::DirPath)]

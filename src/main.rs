@@ -25,19 +25,13 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
-    let platform = current_platform();
+    if cli.gui || cli.pkg_path.is_none() {
+        kunai::gui::run_gui(cli.pkg_path)?;
+        return Ok(ExitCode::SUCCESS);
+    }
 
-    let pkg_path = match &cli.pkg_path {
-        Some(p) => p.clone(),
-        None => {
-            eprintln!(
-                "{}\nRun {} for usage details.",
-                "Kunai - No PKG file or directory specified.".yellow(),
-                "kunai --help".bold().cyan()
-            );
-            return Ok(ExitCode::from(1));
-        }
-    };
+    let platform = current_platform();
+    let pkg_path = cli.pkg_path.clone().unwrap();
 
     if cli.batch || pkg_path.is_dir() {
         return run_batch(&cli, &*platform, &pkg_path);
