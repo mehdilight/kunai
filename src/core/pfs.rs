@@ -3,6 +3,7 @@
 use anyhow::{anyhow, Result};
 use byteorder::{ByteOrder, LittleEndian};
 use flate2::read::ZlibDecoder;
+use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::Read;
 
@@ -268,4 +269,199 @@ pub fn process_pfs_block(
 
         Ok(())
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct PfsFileEntry {
+    pub name: String,
+    pub relative_path: String,
+    pub is_dir: bool,
+    pub inode: u32,
+    pub loc: u32,
+    pub blocks: u32,
+    pub size: u64,
+}
+
+/// Reads a 64KB block either from in-memory pfsc_data (PFS cache) or from the file.
+pub fn read_pfsc_block(
+    pfsc_data: &[u8],
+    file: &File,
+    pfs_image_offset: u64,
+    pfsc_offset: usize,
+    sector_map: &[u64],
+    data_key: &[u8; 16],
+    tweak_key: &[u8; 16],
+    block_idx: usize,
+    decompressed: &mut [u8; 0x10000],
+) -> Result<()> {
+    if block_idx + 1 >= sector_map.len() {
+        return Err(anyhow!("Block index out of bounds in sector_map"));
+    }
+    let sec_offset = sector_map[block_idx] as usize;
+    let sec_size = (sector_map[block_idx + 1] - sector_map[block_idx]) as usize;
+
+    if sec_offset + sec_size <= pfsc_data.len() {
+        let comp_slice = &pfsc_data[sec_offset..sec_offset + sec_size];
+        if sec_size == 0x10000 {
+            decompressed.copy_from_slice(comp_slice);
+        } else if sec_size < 0x10000 {
+            let bytes = decompress_pfsc_block(comp_slice, decompressed)?;
+            if bytes < 0x10000 {
+                decompressed[bytes..].fill(0);
+            }
+        }
+        Ok(())
+    } else {
+        process_pfs_block(
+            file,
+            pfs_image_offset,
+            pfsc_offset,
+            sector_map,
+            data_key,
+            tweak_key,
+            block_idx,
+            decompressed,
+        )
+    }
+}
+
+/// Traverses the hierarchical PFS filesystem tree starting from the user root (uroot),
+/// discovering all files and subdirectories (e.g. sce_module, games, sce_sys/about).
+pub fn parse_pfs_tree(
+    pfsc_data: &[u8],
+    file: &File,
+    pfs_image_offset: u64,
+    pfsc_offset: usize,
+    sector_map: &[u64],
+    data_key: &[u8; 16],
+    tweak_key: &[u8; 16],
+) -> Result<Vec<PfsFileEntry>> {
+    let mut block0 = [0u8; 0x10000];
+    read_pfsc_block(
+        pfsc_data, file, pfs_image_offset, pfsc_offset, sector_map, data_key, tweak_key, 0, &mut block0,
+    )?;
+
+    let ndinode = LittleEndian::read_u32(&block0[0x30..0x34]);
+    if ndinode == 0 {
+        return Ok(Vec::new());
+    }
+
+    let occupied_blocks = ((ndinode as usize * 0xA8) + 0xFFFF) / 0x10000;
+    let mut inode_buf = Vec::with_capacity(ndinode as usize);
+    let mut inode_block = [0u8; 0x10000];
+
+    for b in 1..=occupied_blocks {
+        read_pfsc_block(
+            pfsc_data, file, pfs_image_offset, pfsc_offset, sector_map, data_key, tweak_key, b, &mut inode_block,
+        )?;
+        let mut p = 0;
+        while p + 0xA8 <= 0x10000 && inode_buf.len() < ndinode as usize {
+            let node = Inode::parse(&inode_block[p..]);
+            if node.mode == 0 {
+                break;
+            }
+            inode_buf.push(node);
+            p += 0xA8;
+        }
+    }
+
+    // Locate uroot from Inode 0
+    let mut root_ino = 2usize;
+    if !inode_buf.is_empty() {
+        let mut dir_block = [0u8; 0x10000];
+        if read_pfsc_block(
+            pfsc_data, file, pfs_image_offset, pfsc_offset, sector_map, data_key, tweak_key,
+            inode_buf[0].loc as usize, &mut dir_block,
+        ).is_ok() {
+            let mut offset = 0;
+            while offset < 0x10000 {
+                if let Some(dirent) = Dirent::parse(&dir_block[offset..]) {
+                    if dirent.entsize == 0 {
+                        break;
+                    }
+                    offset += dirent.entsize;
+                    if dirent.name == "uroot" {
+                        root_ino = dirent.ino as usize;
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Traverse directory tree using BFS
+    let mut entries = Vec::new();
+    let mut queue = VecDeque::new();
+    let mut visited = HashSet::new();
+
+    queue.push_back((root_ino, String::new()));
+    visited.insert(root_ino);
+
+    let mut decomp_block = [0u8; 0x10000];
+
+    while let Some((dir_ino, current_dir)) = queue.pop_front() {
+        if dir_ino >= inode_buf.len() {
+            continue;
+        }
+        let dir_inode = &inode_buf[dir_ino];
+
+        for b in 0..dir_inode.blocks as usize {
+            let block_idx = dir_inode.loc as usize + b;
+            if read_pfsc_block(
+                pfsc_data, file, pfs_image_offset, pfsc_offset, sector_map, data_key, tweak_key,
+                block_idx, &mut decomp_block,
+            ).is_err() {
+                continue;
+            }
+
+            let mut offset = 0;
+            while offset < 0x10000 {
+                if let Some(dirent) = Dirent::parse(&decomp_block[offset..]) {
+                    if dirent.entsize == 0 {
+                        break;
+                    }
+                    offset += dirent.entsize;
+
+                    if dirent.name == "." || dirent.name == ".." || dirent.name.is_empty() {
+                        continue;
+                    }
+
+                    let target_path = if current_dir.is_empty() {
+                        dirent.name.clone()
+                    } else {
+                        format!("{}/{}", current_dir, dirent.name)
+                    };
+
+                    let child_ino = dirent.ino as usize;
+                    let (size, loc, blocks, is_dir) = if child_ino < inode_buf.len() {
+                        let node = &inode_buf[child_ino];
+                        let is_dir = dirent.dirent_type == PFS_DIR || (node.mode & 0xF000) == 0x4000;
+                        (node.size as u64, node.loc, node.blocks, is_dir)
+                    } else {
+                        (0, 0, 0, dirent.dirent_type == PFS_DIR)
+                    };
+
+                    entries.push(PfsFileEntry {
+                        name: dirent.name.clone(),
+                        relative_path: target_path.clone(),
+                        is_dir,
+                        inode: dirent.ino as u32,
+                        loc,
+                        blocks,
+                        size,
+                    });
+
+                    if is_dir && visited.insert(child_ino) {
+                        queue.push_back((child_ino, target_path));
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(entries)
 }

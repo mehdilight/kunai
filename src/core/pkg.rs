@@ -2,7 +2,6 @@
 
 use anyhow::{anyhow, Context, Result};
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
-use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -14,8 +13,7 @@ use super::crypto::{
 use rayon::prelude::*;
 use super::entry_types::get_entry_name_by_type;
 use super::pfs::{
-    decompress_pfsc_block, enable_fast_io, find_pfsc_offset, process_pfs_block, Dirent, Inode,
-    PfsFsEntry, PfscHeader, PFS_CURRENT_DIR, PFS_DIR, PFS_FILE,
+    enable_fast_io, find_pfsc_offset, parse_pfs_tree, process_pfs_block, PfscHeader,
 };
 use super::psf::Psf;
 
@@ -393,166 +391,25 @@ impl Pkg {
             return Err(anyhow!("Invalid sector map in PFSC header"));
         }
 
-        // Read iNodes and Dirents from PFSC blocks
-        let mut inode_buf = Vec::new();
-        let mut fs_table = Vec::new();
-        let mut extract_paths: HashMap<u32, PathBuf> = HashMap::new();
-        let mut current_dir = destination_dir.clone();
-
-        let mut ndinode = 0u32;
-        let mut ndinode_counter = 0usize;
-        let mut dinode_reached = false;
-        let mut uroot_reached = false;
-        let mut decompressed_data = vec![0u8; 0x10000];
-
-        for i in 0..num_blocks {
-            let sector_offset = sector_map[i] as usize;
-            let sector_size = (sector_map[i + 1] - sector_map[i]) as usize;
-
-            if sector_offset + sector_size > pfsc_data.len() {
-                continue;
-            }
-
-            let comp_slice = &pfsc_data[sector_offset..sector_offset + sector_size];
-
-            if sector_size == 0x10000 {
-                decompressed_data.copy_from_slice(comp_slice);
-            } else if sector_size < 0x10000 {
-                let _ = decompress_pfsc_block(comp_slice, &mut decompressed_data);
-            }
-
-            if i == 0 {
-                ndinode = LittleEndian::read_u32(&decompressed_data[0x30..0x34]);
-            }
-
-            let mut occupied_blocks = (ndinode as usize * 0xA8) / 0x10000;
-            if (ndinode as usize * 0xA8) % 0x10000 != 0 {
-                occupied_blocks += 1;
-            }
-
-            if i >= 1 && i <= occupied_blocks {
-                let mut p = 0;
-                while p < 0x10000 {
-                    let node = Inode::parse(&decompressed_data[p..]);
-                    if node.mode == 0 {
-                        break;
-                    }
-                    inode_buf.push(node);
-                    p += 0xA8;
-                }
-            }
-
-            // Check for flat_path_table / uroot
-            if decompressed_data.len() >= 0x1F {
-                let flat_path_table = String::from_utf8_lossy(&decompressed_data[0x10..0x1F]);
-                if flat_path_table.starts_with("flat_path_table") {
-                    uroot_reached = true;
-                }
-            }
-
-            if uroot_reached {
-                let mut offset = 0;
-                while offset < 0x10000 {
-                    if let Some(dirent) = Dirent::parse(&decompressed_data[offset..]) {
-                        let ent_size = dirent.entsize;
-                        if dirent.ino != 0 {
-                            ndinode_counter += 1;
-                        } else {
-                            let parent_path = destination_dir
-                                .parent()
-                                .map(|p| p.to_path_buf())
-                                .unwrap_or_else(|| destination_dir.clone());
-                            let tid = self.title_id();
-
-                            if parent_path.file_name().and_then(|n| n.to_str()) != Some(tid)
-                                && !destination_dir.to_string_lossy().ends_with("-patch")
-                            {
-                                extract_paths.insert(ndinode_counter as u32, parent_path.join(tid));
-                            } else {
-                                extract_paths.insert(ndinode_counter as u32, destination_dir.clone());
-                            }
-                            uroot_reached = false;
-                            break;
-                        }
-                        if ent_size == 0 {
-                            break;
-                        }
-                        offset += ent_size;
-                    } else {
-                        break;
-                    }
-                }
-            }
-
-            if decompressed_data.len() >= 0x2A {
-                let dot = decompressed_data[0x10];
-                let dotdot = &decompressed_data[0x28..0x2A];
-                if dot == b'.' && dotdot == b".." {
-                    dinode_reached = true;
-                }
-            }
-
-            if dinode_reached {
-                let mut j = 0;
-                let mut end_reached = false;
-                while j < 0x10000 {
-                    if let Some(dirent) = Dirent::parse(&decompressed_data[j..]) {
-                        if dirent.ino == 0 {
-                            break;
-                        }
-
-                        let ent_size = dirent.entsize;
-                        let fs_entry = PfsFsEntry {
-                            name: dirent.name.clone(),
-                            inode: dirent.ino as u32,
-                            entry_type: dirent.dirent_type,
-                        };
-
-                        if fs_entry.entry_type == PFS_CURRENT_DIR {
-                            if let Some(path) = extract_paths.get(&fs_entry.inode) {
-                                current_dir = path.clone();
-                            }
-                        }
-
-                        let target_path = current_dir.join(&fs_entry.name);
-                        extract_paths.insert(fs_entry.inode, target_path.clone());
-
-                        if fs_entry.entry_type == PFS_FILE || fs_entry.entry_type == PFS_DIR {
-                            if fs_entry.entry_type == PFS_DIR {
-                                fs::create_dir_all(&target_path)?;
-                            }
-                            ndinode_counter += 1;
-                            if ndinode_counter + 1 == ndinode as usize {
-                                end_reached = true;
-                            }
-                        }
-
-                        fs_table.push(fs_entry);
-
-                        if ent_size == 0 {
-                            break;
-                        }
-                        j += ent_size;
-                    } else {
-                        break;
-                    }
-                }
-
-                if end_reached {
-                    break;
-                }
-            }
-        }
+        // Parse PFS directory tree hierarchically
+        let pfs_entries = parse_pfs_tree(
+            pfsc_data,
+            &self.file,
+            self.header.pfs_image_offset,
+            pfsc_offset,
+            &sector_map,
+            &data_key,
+            &tweak_key,
+        )?;
 
         // Step 3: Extract files from PFS image sectors
         enable_fast_io(&self.file);
 
         // Pre-create all directory nodes
-        for entry in &fs_table {
-            if entry.entry_type == PFS_DIR {
-                if let Some(path) = extract_paths.get(&entry.inode) {
-                    let _ = fs::create_dir_all(path);
-                }
+        for entry in &pfs_entries {
+            if entry.is_dir {
+                let dir_path = destination_dir.join(&entry.relative_path);
+                let _ = fs::create_dir_all(&dir_path);
             }
         }
 
@@ -564,31 +421,20 @@ impl Pkg {
             file_size: usize,
         }
 
-        let mut files_to_extract = Vec::new();
-        for entry in &fs_table {
-            if entry.entry_type != PFS_FILE {
-                continue;
-            }
-
-            let inode_idx = entry.inode as usize;
-            if inode_idx >= inode_buf.len() {
-                continue;
-            }
-
-            let inode = &inode_buf[inode_idx];
-            let file_path = match extract_paths.get(&entry.inode) {
-                Some(p) => p.clone(),
-                None => continue,
-            };
-
-            files_to_extract.push(FileToExtract {
-                name: entry.name.clone(),
-                file_path,
-                sector_loc: inode.loc as usize,
-                nblocks: inode.blocks as usize,
-                file_size: inode.size as usize,
-            });
-        }
+        let files_to_extract: Vec<_> = pfs_entries
+            .into_iter()
+            .filter(|e| !e.is_dir)
+            .map(|e| {
+                let file_path = destination_dir.join(&e.relative_path);
+                FileToExtract {
+                    name: e.name,
+                    file_path,
+                    sector_loc: e.loc as usize,
+                    nblocks: e.blocks as usize,
+                    file_size: e.size as usize,
+                }
+            })
+            .collect();
 
         let total_files = files_to_extract.len();
         let progress_counter = std::sync::atomic::AtomicUsize::new(0);
@@ -729,6 +575,22 @@ mod tests {
 
         let eboot_meta = fs::metadata(dest.join("eboot.bin")).expect("eboot.bin metadata");
         assert!(eboot_meta.len() > 0, "eboot.bin must not be empty");
+
+        // Verify .prx module files extraction
+        assert!(dest.join("sce_module/libc.prx").exists(), "libc.prx must be extracted into sce_module");
+        let libc_meta = fs::metadata(dest.join("sce_module/libc.prx")).expect("libc.prx metadata");
+        assert_eq!(libc_meta.len(), 52800, "libc.prx size mismatch");
+
+        assert!(dest.join("sce_module/libSceFios2.prx").exists(), "libSceFios2.prx must be extracted into sce_module");
+        let fios2_meta = fs::metadata(dest.join("sce_module/libSceFios2.prx")).expect("libSceFios2.prx metadata");
+        assert_eq!(fios2_meta.len(), 52816, "libSceFios2.prx size mismatch");
+
+        // Verify subfolder binaries
+        assert!(dest.join("games/tetris.elf").exists(), "tetris.elf must be extracted into games");
+        let tetris_meta = fs::metadata(dest.join("games/tetris.elf")).expect("tetris.elf metadata");
+        assert_eq!(tetris_meta.len(), 548524, "tetris.elf size mismatch");
+
+        assert!(dest.join("sce_sys/about/right.sprx").exists(), "right.sprx must be extracted into sce_sys/about");
 
         let _ = fs::remove_dir_all(&out_dir);
     }
