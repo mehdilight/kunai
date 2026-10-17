@@ -11,10 +11,11 @@ use super::crypto::{
     aes_cbc_decrypt, aes_cbc_decrypt_vec, decrypt_dk3, decrypt_ekpfs, decrypt_pfs, derive_iv_key,
     derive_pfs_keys,
 };
+use rayon::prelude::*;
 use super::entry_types::get_entry_name_by_type;
 use super::pfs::{
-    decompress_pfsc_block, find_pfsc_offset, Dirent, Inode, PfsFsEntry, PfscHeader,
-    PFS_CURRENT_DIR, PFS_DIR, PFS_FILE,
+    decompress_pfsc_block, enable_fast_io, find_pfsc_offset, process_pfs_block, Dirent, Inode,
+    PfsFsEntry, PfscHeader, PFS_CURRENT_DIR, PFS_DIR, PFS_FILE,
 };
 use super::psf::Psf;
 
@@ -269,7 +270,7 @@ impl Pkg {
     }
 
     /// Extracts the entire PKG contents (sce_sys entries, decrypted NP entries, and PFS image).
-    pub fn extract<P: AsRef<Path>, F: Fn(usize, usize, &str)>(
+    pub fn extract<P: AsRef<Path>, F: Fn(usize, usize, &str) + Send>(
         &mut self,
         destination_dir: P,
         progress_cb: F,
@@ -544,16 +545,30 @@ impl Pkg {
         }
 
         // Step 3: Extract files from PFS image sectors
-        let total_files = fs_table.iter().filter(|e| e.entry_type == PFS_FILE).count();
-        let mut current_file_idx = 0;
+        enable_fast_io(&self.file);
 
+        // Pre-create all directory nodes
+        for entry in &fs_table {
+            if entry.entry_type == PFS_DIR {
+                if let Some(path) = extract_paths.get(&entry.inode) {
+                    let _ = fs::create_dir_all(path);
+                }
+            }
+        }
+
+        struct FileToExtract {
+            name: String,
+            file_path: PathBuf,
+            sector_loc: usize,
+            nblocks: usize,
+            file_size: usize,
+        }
+
+        let mut files_to_extract = Vec::new();
         for entry in &fs_table {
             if entry.entry_type != PFS_FILE {
                 continue;
             }
-
-            current_file_idx += 1;
-            progress_cb(current_file_idx, total_files, &entry.name);
 
             let inode_idx = entry.inode as usize;
             if inode_idx >= inode_buf.len() {
@@ -561,71 +576,160 @@ impl Pkg {
             }
 
             let inode = &inode_buf[inode_idx];
-            let sector_loc = inode.loc as usize;
-            let nblocks = inode.blocks as usize;
-            let file_size = inode.size as usize;
-
             let file_path = match extract_paths.get(&entry.inode) {
-                Some(p) => p,
+                Some(p) => p.clone(),
                 None => continue,
             };
 
-            if let Some(parent) = file_path.parent() {
-                fs::create_dir_all(parent)?;
+            files_to_extract.push(FileToExtract {
+                name: entry.name.clone(),
+                file_path,
+                sector_loc: inode.loc as usize,
+                nblocks: inode.blocks as usize,
+                file_size: inode.size as usize,
+            });
+        }
+
+        let total_files = files_to_extract.len();
+        let progress_counter = std::sync::atomic::AtomicUsize::new(0);
+        let progress_mutex = std::sync::Mutex::new(progress_cb);
+
+        let report_done = |file_name: &str| {
+            let current = progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if let Ok(cb) = progress_mutex.lock() {
+                cb(current, total_files, file_name);
+            }
+        };
+
+        let extract_single_file = |item: &FileToExtract| -> Result<()> {
+            if let Some(parent) = item.file_path.parent() {
+                let _ = fs::create_dir_all(parent);
             }
 
-            let mut out_file = File::create(file_path)?;
-            let mut size_decompressed = 0usize;
+            let out_file = File::create(&item.file_path)?;
+            if item.nblocks == 0 || item.file_size == 0 {
+                return Ok(());
+            }
 
-            const BUFFER_SIZE: usize = 0x11000;
-            let mut pfsc_buffer = vec![0u8; BUFFER_SIZE];
-            let mut decrypted_buffer = vec![0u8; BUFFER_SIZE];
-            let mut decomp_block = vec![0u8; 0x10000];
+            let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, out_file);
 
-            for j in 0..nblocks {
-                let sector_idx = sector_loc + j;
-                if sector_idx + 1 >= sector_map.len() {
-                    break;
-                }
+            if item.nblocks == 1 {
+                let mut block = [0u8; 0x10000];
+                process_pfs_block(
+                    &self.file,
+                    self.header.pfs_image_offset,
+                    pfsc_offset,
+                    &sector_map,
+                    &data_key,
+                    &tweak_key,
+                    item.sector_loc,
+                    &mut block,
+                )?;
+                let write_size = item.file_size.min(0x10000);
+                writer.write_all(&block[..write_size])?;
+                writer.flush()?;
+                return Ok(());
+            }
 
-                let sec_offset = sector_map[sector_idx];
-                let sec_size = (sector_map[sector_idx + 1] - sec_offset) as usize;
+            // Multi-block file: process in parallel chunks across CPU cores
+            const CHUNK_SIZE: usize = 64; // 64 blocks = 4 MB per chunk
+            let mut chunk_blocks: Vec<[u8; 0x10000]> = vec![[0u8; 0x10000]; CHUNK_SIZE];
 
-                let abs_offset = self.header.pfs_image_offset + (pfsc_offset as u64) + sec_offset;
-                let sector_mask = (sec_offset + pfsc_offset as u64) & !0xFFF;
-                let prev_data = ((sec_offset + pfsc_offset as u64) - sector_mask) as usize;
-                let aligned_file_offset = abs_offset - prev_data as u64;
-                let current_sector = sector_mask / 0x1000;
+            for chunk_start in (0..item.nblocks).step_by(CHUNK_SIZE) {
+                let chunk_len = (item.nblocks - chunk_start).min(CHUNK_SIZE);
+                let active_slice = &mut chunk_blocks[..chunk_len];
 
-                self.file.seek(SeekFrom::Start(aligned_file_offset))?;
-                let bytes_read = self.file.read(&mut pfsc_buffer)?;
-                if bytes_read < BUFFER_SIZE {
-                    pfsc_buffer[bytes_read..].fill(0);
-                }
+                active_slice
+                    .par_iter_mut()
+                    .enumerate()
+                    .try_for_each(|(idx, block)| {
+                        let j = chunk_start + idx;
+                        process_pfs_block(
+                            &self.file,
+                            self.header.pfs_image_offset,
+                            pfsc_offset,
+                            &sector_map,
+                            &data_key,
+                            &tweak_key,
+                            item.sector_loc + j,
+                            block,
+                        )
+                    })?;
 
-                decrypt_pfs(&data_key, &tweak_key, &pfsc_buffer, &mut decrypted_buffer, current_sector);
-
-                let comp_slice = &decrypted_buffer[prev_data..prev_data + sec_size];
-
-                if sec_size == 0x10000 {
-                    decomp_block.copy_from_slice(comp_slice);
-                } else if sec_size < 0x10000 {
-                    let _ = decompress_pfsc_block(comp_slice, &mut decomp_block);
-                }
-
-                size_decompressed += 0x10000;
-
-                if j < nblocks - 1 {
-                    out_file.write_all(&decomp_block)?;
-                } else {
-                    // Trim zero padding on the last block
-                    let excess = size_decompressed.saturating_sub(file_size);
-                    let write_size = decomp_block.len().saturating_sub(excess);
-                    out_file.write_all(&decomp_block[..write_size])?;
+                for (idx, block) in active_slice.iter().enumerate() {
+                    let j = chunk_start + idx;
+                    if j < item.nblocks - 1 {
+                        writer.write_all(block)?;
+                    } else {
+                        let excess = (item.nblocks * 0x10000).saturating_sub(item.file_size);
+                        let write_size = 0x10000usize.saturating_sub(excess);
+                        writer.write_all(&block[..write_size])?;
+                    }
                 }
             }
+
+            writer.flush()?;
+            Ok(())
+        };
+
+        // Partition into small files (<= 4 blocks, <= 256 KB) and large files (> 4 blocks)
+        let (small_files, large_files): (Vec<_>, Vec<_>) = files_to_extract
+            .into_iter()
+            .partition(|item| item.nblocks <= 4);
+
+        // Extract small files in parallel across CPU cores
+        small_files.par_iter().try_for_each(|item| -> Result<()> {
+            extract_single_file(item)?;
+            report_done(&item.name);
+            Ok(())
+        })?;
+
+        // Extract large files (each large file uses all CPU cores for block decompression)
+        for item in &large_files {
+            extract_single_file(item)?;
+            report_done(&item.name);
         }
 
         Ok(destination_dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_sample_pkg() {
+        let pkg_path = Path::new("/Users/mehdi/projects/fun/rsx4/IV0000-BREW00777_00-RSX4EMULATOR0001.pkg");
+        if !pkg_path.exists() {
+            return;
+        }
+
+        let mut pkg = Pkg::open(pkg_path).expect("Failed to open test PKG");
+        assert_eq!(pkg.detect_type(), PkgType::BaseGame);
+        assert_eq!(pkg.title_id(), "BREW00777");
+
+        let out_dir = std::env::temp_dir().join(format!("kunai_test_{}", std::process::id()));
+        if out_dir.exists() {
+            let _ = fs::remove_dir_all(&out_dir);
+        }
+
+        let reported_files = std::sync::Mutex::new(Vec::new());
+        let dest = pkg
+            .extract(&out_dir, |_cur, _tot, name| {
+                if let Ok(mut list) = reported_files.lock() {
+                    list.push(name.to_string());
+                }
+            })
+            .expect("Extraction failed");
+
+        assert!(dest.exists());
+        assert!(dest.join("sce_sys/param.sfo").exists());
+        assert!(dest.join("eboot.bin").exists());
+
+        let eboot_meta = fs::metadata(dest.join("eboot.bin")).expect("eboot.bin metadata");
+        assert!(eboot_meta.len() > 0, "eboot.bin must not be empty");
+
+        let _ = fs::remove_dir_all(&out_dir);
     }
 }

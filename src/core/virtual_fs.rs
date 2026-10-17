@@ -11,7 +11,7 @@ use super::crypto::{
 };
 use super::entry_types::get_entry_name_by_type;
 use super::pfs::{
-    decompress_pfsc_block, find_pfsc_offset, Dirent, Inode, PfsFsEntry, PfscHeader,
+    decompress_pfsc_block, find_pfsc_offset, process_pfs_block, Dirent, Inode, PfsFsEntry, PfscHeader,
     PFS_CURRENT_DIR, PFS_DIR, PFS_FILE,
 };
 use super::pkg::Pkg;
@@ -449,41 +449,19 @@ impl VirtualFs {
         let mut out = Vec::with_capacity(file_size);
         let mut size_decompressed = 0usize;
 
-        const BUFFER_SIZE: usize = 0x11000;
-        let mut pfsc_buffer = vec![0u8; BUFFER_SIZE];
-        let mut decrypted_buffer = vec![0u8; BUFFER_SIZE];
-        let mut decomp_block = vec![0u8; 0x10000];
+        let mut decomp_block = [0u8; 0x10000];
 
         for j in 0..nblocks {
-            let sector_idx = sector_loc + j;
-            if sector_idx + 1 >= self.sector_map.len() {
-                break;
-            }
-
-            let sec_offset = self.sector_map[sector_idx];
-            let sec_size = (self.sector_map[sector_idx + 1] - sec_offset) as usize;
-
-            let abs_offset = self.pfs_image_offset + (self.pfsc_offset as u64) + sec_offset;
-            let sector_mask = (sec_offset + self.pfsc_offset as u64) & !0xFFF;
-            let prev_data = ((sec_offset + self.pfsc_offset as u64) - sector_mask) as usize;
-            let aligned_file_offset = abs_offset - prev_data as u64;
-            let current_sector = sector_mask / 0x1000;
-
-            pkg_file.seek(SeekFrom::Start(aligned_file_offset))?;
-            let bytes_read = pkg_file.read(&mut pfsc_buffer)?;
-            if bytes_read < BUFFER_SIZE {
-                pfsc_buffer[bytes_read..].fill(0);
-            }
-
-            decrypt_pfs(&self.data_key, &self.tweak_key, &pfsc_buffer, &mut decrypted_buffer, current_sector);
-
-            let comp_slice = &decrypted_buffer[prev_data..prev_data + sec_size];
-
-            if sec_size == 0x10000 {
-                decomp_block.copy_from_slice(comp_slice);
-            } else if sec_size < 0x10000 {
-                let _ = decompress_pfsc_block(comp_slice, &mut decomp_block);
-            }
+            process_pfs_block(
+                pkg_file,
+                self.pfs_image_offset,
+                self.pfsc_offset,
+                &self.sector_map,
+                &self.data_key,
+                &self.tweak_key,
+                sector_loc + j,
+                &mut decomp_block,
+            )?;
 
             size_decompressed += 0x10000;
 
