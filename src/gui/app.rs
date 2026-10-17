@@ -1,7 +1,7 @@
 //! Main application state and Nautilus-styled UI rendering for Kunai.
 
 use anyhow::{anyhow, Result};
-use eframe::egui::{self, vec2, Align2, Color32, Pos2, Rect, Rounding, ScrollArea, Stroke, Ui};
+use eframe::egui::{self, pos2, vec2, Align2, Color32, Rect, Rounding, ScrollArea, Stroke, Ui};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
@@ -82,7 +82,6 @@ impl KunaiApp {
             Ok(mut pkg) => {
                 match VirtualFs::build(&mut pkg) {
                     Ok(vfs) => {
-                        // Attempt to load icon0.png
                         let mut icon_tex = None;
                         if let Some(icon_node) = vfs.find_node("sce_sys/icon0.png") {
                             if let Ok(bytes) = vfs.read_file_content(pkg.file_mut(), icon_node) {
@@ -288,44 +287,38 @@ impl KunaiApp {
 
         egui::Frame::none()
             .fill(COLOR_BG_HEADERBAR)
-            .inner_margin(egui::Margin::symmetric(14.0, 10.0))
+            .inner_margin(egui::Margin::symmetric(14.0, 8.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    // Navigation controls (<, >, ^)
+                    // 1. Linked navigation buttons (< and >)
                     let can_back = !self.history_back.is_empty();
                     let can_fwd = !self.history_forward.is_empty();
+                    let (back_clicked, fwd_clicked) = linked_navigation_buttons(ui, can_back, can_fwd);
+                    if back_clicked {
+                        self.navigate_back();
+                    }
+                    if fwd_clicked {
+                        self.navigate_forward();
+                    }
+
+                    // 2. Up Directory Button
                     let can_up = !self.current_path.is_empty();
-
-                    ui.add_enabled_ui(can_back, |ui| {
-                        if ui.button("<").on_hover_text("Back").clicked() {
-                            self.navigate_back();
-                        }
-                    });
-
-                    ui.add_enabled_ui(can_fwd, |ui| {
-                        if ui.button(">").on_hover_text("Forward").clicked() {
-                            self.navigate_forward();
-                        }
-                    });
-
-                    ui.add_enabled_ui(can_up, |ui| {
-                        if ui.button("^").on_hover_text("Up to parent folder").clicked() {
-                            self.navigate_up();
-                        }
-                    });
+                    if up_directory_button(ui, can_up) {
+                        self.navigate_up();
+                    }
 
                     ui.add_space(8.0);
 
-                    // Nautilus Pathbar Breadcrumbs Container
+                    let pathbar_bg = Color32::from_white_alpha(14);
                     egui::Frame::none()
-                        .fill(Color32::from_rgba_premultiplied(255, 255, 255, 12))
+                        .fill(pathbar_bg)
                         .rounding(Rounding::same(8.0))
                         .stroke(Stroke::new(1.0, COLOR_BORDER_SUBTLE))
-                        .inner_margin(egui::Margin::symmetric(6.0, 3.0))
+                        .inner_margin(egui::Margin::symmetric(4.0, 2.0))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 let is_root = self.current_path.is_empty();
-                                if breadcrumb_button(ui, "Root", is_root).clicked() {
+                                if breadcrumb_button(ui, "Root", is_root, true).clicked() {
                                     open_root = true;
                                 }
 
@@ -339,10 +332,16 @@ impl KunaiApp {
                                     let mut accum = String::new();
 
                                     for (i, seg) in segments.iter().enumerate() {
-                                        ui.label(
-                                            egui::RichText::new(">")
-                                                .size(11.0)
-                                                .color(COLOR_TEXT_MUTED),
+                                        // Vector chevron separator
+                                        let (sep_rect, _) = ui.allocate_exact_size(vec2(10.0, 28.0), egui::Sense::hover());
+                                        let sc = sep_rect.center();
+                                        ui.painter().line_segment(
+                                            [pos2(sc.x - 2.0, sc.y - 4.0), pos2(sc.x + 2.0, sc.y)],
+                                            Stroke::new(1.2, COLOR_TEXT_MUTED),
+                                        );
+                                        ui.painter().line_segment(
+                                            [pos2(sc.x + 2.0, sc.y), pos2(sc.x - 2.0, sc.y + 4.0)],
+                                            Stroke::new(1.2, COLOR_TEXT_MUTED),
                                         );
 
                                         if !accum.is_empty() {
@@ -352,7 +351,7 @@ impl KunaiApp {
 
                                         let is_last = i == segments.len() - 1;
                                         let target = accum.clone();
-                                        if breadcrumb_button(ui, seg, is_last).clicked() {
+                                        if breadcrumb_button(ui, seg, is_last, false).clicked() {
                                             nav_target = Some(target);
                                         }
                                     }
@@ -360,9 +359,10 @@ impl KunaiApp {
                             });
                         });
 
+                    // Right-side controls
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Open PKG Button
-                        if ui.button("Open PKG...").clicked() {
+                        if ui.add(egui::Button::new("Open PKG...").min_size(vec2(0.0, 32.0))).clicked() {
                             if let Some(path) = rfd::FileDialog::new()
                                 .add_filter("PS4 Package", &["pkg"])
                                 .pick_file()
@@ -371,37 +371,25 @@ impl KunaiApp {
                             }
                         }
 
-                        // View mode switcher: List / Grid
-                        ui.horizontal(|ui| {
-                            let list_active = self.view_mode == ViewMode::List;
-                            let grid_active = self.view_mode == ViewMode::Grid;
+                        // View mode switcher (List / Grid)
+                        if let Some(is_grid) = view_mode_switcher(ui, self.view_mode == ViewMode::Grid) {
+                            self.view_mode = if is_grid { ViewMode::Grid } else { ViewMode::List };
+                        }
 
-                            if ui
-                                .selectable_label(list_active, "List")
-                                .on_hover_text("List view")
-                                .clicked()
-                            {
-                                self.view_mode = ViewMode::List;
-                            }
-                            if ui
-                                .selectable_label(grid_active, "Grid")
-                                .on_hover_text("Grid view")
-                                .clicked()
-                            {
-                                self.view_mode = ViewMode::Grid;
-                            }
-                        });
+                        ui.add_space(4.0);
 
-                        ui.add_space(6.0);
-
-                        // Search box
-                        let search_edit = egui::TextEdit::singleline(&mut self.search_query)
-                            .hint_text("Search files...")
-                            .desired_width(170.0);
-                        ui.add(search_edit);
+                        // Search entry pill
+                        search_entry_pill(ui, &mut self.search_query);
                     });
                 });
             });
+
+        // 1px headerbar bottom divider
+        let header_rect = ui.min_rect();
+        ui.painter().line_segment(
+            [pos2(header_rect.min.x, header_rect.max.y), pos2(header_rect.max.x, header_rect.max.y)],
+            Stroke::new(1.0, COLOR_BORDER_HEADER),
+        );
 
         if open_root {
             self.navigate_to(String::new());
@@ -418,7 +406,7 @@ impl KunaiApp {
 
                 egui::Frame::none()
                     .fill(COLOR_BG_CARD)
-                    .rounding(Rounding::same(8.0))
+                    .rounding(Rounding::same(10.0))
                     .stroke(Stroke::new(1.0, COLOR_BORDER_SUBTLE))
                     .inner_margin(egui::Margin::same(12.0))
                     .show(ui, |ui| {
@@ -427,8 +415,8 @@ impl KunaiApp {
                                 ui.image((tex.id(), vec2(54.0, 54.0)));
                             } else {
                                 let (rect, _) = ui.allocate_exact_size(vec2(54.0, 54.0), egui::Sense::hover());
-                                ui.painter().rect_filled(rect, Rounding::same(6.0), COLOR_BG_VIEW);
-                                ui.painter().rect_stroke(rect, Rounding::same(6.0), Stroke::new(1.0, COLOR_BORDER_SUBTLE));
+                                ui.painter().rect_filled(rect, Rounding::same(8.0), COLOR_BG_VIEW);
+                                ui.painter().rect_stroke(rect, Rounding::same(8.0), Stroke::new(1.0, COLOR_BORDER_SUBTLE));
                             }
 
                             ui.vertical(|ui| {
@@ -439,7 +427,7 @@ impl KunaiApp {
                                 ui.label(
                                     egui::RichText::new(title)
                                         .strong()
-                                        .size(13.0)
+                                        .size(13.5)
                                         .color(COLOR_TEXT_PRIMARY),
                                 );
 
@@ -488,13 +476,13 @@ impl KunaiApp {
             } else {
                 egui::Frame::none()
                     .fill(COLOR_BG_CARD)
-                    .rounding(Rounding::same(8.0))
+                    .rounding(Rounding::same(10.0))
                     .stroke(Stroke::new(1.0, COLOR_BORDER_SUBTLE))
-                    .inner_margin(egui::Margin::same(12.0))
+                    .inner_margin(egui::Margin::same(14.0))
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
                             ui.label(egui::RichText::new("No Package Loaded").strong().color(COLOR_TEXT_SECONDARY));
-                            ui.add_space(4.0);
+                            ui.add_space(6.0);
                             if ui.button("Select .pkg").clicked() {
                                 if let Some(path) = rfd::FileDialog::new()
                                     .add_filter("PS4 Package", &["pkg"])
@@ -507,7 +495,7 @@ impl KunaiApp {
                     });
             }
 
-            ui.add_space(12.0);
+            ui.add_space(14.0);
 
             // Places / Quick Navigation
             ui.label(
@@ -519,12 +507,12 @@ impl KunaiApp {
             ui.add_space(4.0);
 
             let is_root = self.current_path.is_empty();
-            if ui.selectable_label(is_root, "Root Directory").clicked() {
+            if sidebar_item(ui, "Root Directory", is_root, true).clicked() {
                 self.navigate_to(String::new());
             }
 
             let is_sce_sys = self.current_path == "sce_sys";
-            if ui.selectable_label(is_sce_sys, "System (sce_sys)").clicked() {
+            if sidebar_item(ui, "System (sce_sys)", is_sce_sys, true).clicked() {
                 self.navigate_to("sce_sys".to_string());
             }
 
@@ -541,7 +529,7 @@ impl KunaiApp {
 
             for (dir_name, dir_path) in top_dirs {
                 let is_active = self.current_path == dir_path;
-                if ui.selectable_label(is_active, &dir_name).clicked() {
+                if sidebar_item(ui, &dir_name, is_active, true).clicked() {
                     self.navigate_to(dir_path);
                 }
             }
@@ -555,7 +543,7 @@ impl KunaiApp {
                     .strong()
                     .color(COLOR_TEXT_MUTED),
             );
-            ui.add_space(4.0);
+            ui.add_space(6.0);
 
             let platform = current_platform();
             let shadps4_dir_text = platform
@@ -565,7 +553,7 @@ impl KunaiApp {
             let has_pkg = self.pkg.is_some();
 
             ui.add_enabled_ui(has_pkg && !self.is_extracting, |ui| {
-                if ui.button("Install to shadPS4").on_hover_text(format!("Installs package directly into {}", shadps4_dir_text)).clicked() {
+                if suggested_action_button(ui, "Install to shadPS4").on_hover_text(format!("Installs package directly into {}", shadps4_dir_text)).clicked() {
                     if let Some(pkg) = &self.pkg {
                         let pkg_type = pkg.detect_type();
                         let title_id = pkg.title_id();
@@ -581,17 +569,19 @@ impl KunaiApp {
                     }
                 }
 
-                ui.add_space(4.0);
+                ui.add_space(6.0);
 
-                if ui.button("Extract All...").clicked() {
+                let extract_all_btn = egui::Button::new("Extract All...").min_size(vec2(ui.available_width(), 34.0));
+                if ui.add(extract_all_btn).clicked() {
                     if let Some(dest) = rfd::FileDialog::new().pick_folder() {
                         self.start_extraction(dest, None);
                     }
                 }
 
                 if self.selected_node_path.is_some() {
-                    ui.add_space(4.0);
-                    if ui.button("Extract Selected...").clicked() {
+                    ui.add_space(6.0);
+                    let extract_sel_btn = egui::Button::new("Extract Selected...").min_size(vec2(ui.available_width(), 34.0));
+                    if ui.add(extract_sel_btn).clicked() {
                         self.trigger_extract_selected();
                     }
                 }
@@ -606,14 +596,19 @@ impl KunaiApp {
             // Welcome empty state
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
-                    ui.heading("Welcome to Kunai");
-                    ui.add_space(8.0);
+                    // Vector package emblem
+                    let (icon_rect, _) = ui.allocate_exact_size(vec2(72.0, 72.0), egui::Sense::hover());
+                    paint_folder_icon(ui.painter(), icon_rect);
+
+                    ui.add_space(12.0);
+                    ui.heading("Drop a PlayStation 4 .pkg file here");
+                    ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new("Drop a PlayStation 4 .pkg file here or click below to inspect.")
+                        egui::RichText::new("Inspect contents in-memory, preview game icons and param.sfo, or install directly into shadPS4.")
                             .color(COLOR_TEXT_SECONDARY),
                     );
                     ui.add_space(16.0);
-                    if ui.button("Open Package File...").clicked() {
+                    if suggested_action_button(ui, "Open Package File...").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("PS4 Package", &["pkg"])
                             .pick_file()
@@ -649,27 +644,43 @@ impl KunaiApp {
                 // Nautilus List View
                 egui::Frame::none()
                     .fill(COLOR_BG_VIEW)
-                    .inner_margin(egui::Margin::same(8.0))
+                    .inner_margin(egui::Margin::symmetric(14.0, 8.0))
                     .show(ui, |ui| {
+                        let total_w = ui.available_width();
+                        let size_col_w = 110.0;
+                        let type_col_w = 130.0;
+
                         // Header row
-                        ui.horizontal(|ui| {
-                            ui.allocate_ui(vec2(ui.available_width() - 220.0, 24.0), |ui| {
-                                ui.label(egui::RichText::new("Name").strong().size(12.0).color(COLOR_TEXT_MUTED));
-                            });
-                            ui.allocate_ui(vec2(100.0, 24.0), |ui| {
-                                ui.label(egui::RichText::new("Size").strong().size(12.0).color(COLOR_TEXT_MUTED));
-                            });
-                            ui.allocate_ui(vec2(100.0, 24.0), |ui| {
-                                ui.label(egui::RichText::new("Type").strong().size(12.0).color(COLOR_TEXT_MUTED));
-                            });
-                        });
+                        let (header_rect, _) = ui.allocate_exact_size(vec2(total_w, 24.0), egui::Sense::hover());
+                        ui.painter().text(
+                            pos2(header_rect.min.x + 38.0, header_rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            "Name",
+                            egui::FontId::proportional(11.5),
+                            COLOR_TEXT_MUTED,
+                        );
+                        ui.painter().text(
+                            pos2(header_rect.max.x - size_col_w - type_col_w, header_rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            "Size",
+                            egui::FontId::proportional(11.5),
+                            COLOR_TEXT_MUTED,
+                        );
+                        ui.painter().text(
+                            pos2(header_rect.max.x - type_col_w, header_rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            "Type",
+                            egui::FontId::proportional(11.5),
+                            COLOR_TEXT_MUTED,
+                        );
 
                         ui.separator();
+                        ui.add_space(2.0);
 
                         for node in &entries {
                             let is_selected = self.selected_node_path.as_deref() == Some(&node.relative_path);
-                            let row_height = 34.0;
-                            let desired_size = vec2(ui.available_width(), row_height);
+                            let row_height = 36.0;
+                            let desired_size = vec2(total_w, row_height);
                             let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
                             // Hover & selection backgrounds
@@ -688,7 +699,6 @@ impl KunaiApp {
                                 node_to_open = Some(node.clone());
                             }
 
-                            // Context menu
                             response.context_menu(|ui| {
                                 if !node.is_dir {
                                     if ui.button("Quick Preview").clicked() {
@@ -702,59 +712,60 @@ impl KunaiApp {
                                 }
                             });
 
-                            // Render row contents
-                            let icon_rect = Rect::from_min_size(
-                                Pos2::new(rect.min.x + 8.0, rect.min.y + 7.0),
+                            // Icon (centered vertically)
+                            let icon_rect = Rect::from_center_size(
+                                pos2(rect.min.x + 18.0, rect.center().y),
                                 vec2(20.0, 20.0),
                             );
                             render_file_icon(ui, icon_rect, node.is_dir, &node.name);
 
-                            let text_name_pos = Pos2::new(rect.min.x + 36.0, rect.min.y + 8.0);
-                            let name_color = if node.is_dir {
-                                COLOR_ACCENT_HOVER
+                            // Name Column
+                            let (name_color, font_id) = if node.is_dir {
+                                (Color32::WHITE, egui::FontId::proportional(13.0))
                             } else {
-                                COLOR_TEXT_PRIMARY
+                                (COLOR_TEXT_PRIMARY, egui::FontId::proportional(12.5))
                             };
-                            let name_galley = ui.painter().layout_no_wrap(
-                                node.name.clone(),
-                                egui::FontId::proportional(13.0),
+                            ui.painter().text(
+                                pos2(rect.min.x + 38.0, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                &node.name,
+                                font_id,
                                 name_color,
                             );
-                            ui.painter().galley(text_name_pos, name_galley, name_color);
 
-                            // Size column
+                            // Size Column
                             let size_str = if node.is_dir {
                                 "-".to_string()
                             } else {
                                 format_bytes(node.size)
                             };
-                            let size_pos = Pos2::new(rect.max.x - 220.0, rect.min.y + 9.0);
-                            let size_galley = ui.painter().layout_no_wrap(
-                                size_str,
+                            ui.painter().text(
+                                pos2(rect.max.x - size_col_w - type_col_w, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                &size_str,
                                 egui::FontId::proportional(12.0),
                                 COLOR_TEXT_SECONDARY,
                             );
-                            ui.painter().galley(size_pos, size_galley, COLOR_TEXT_SECONDARY);
 
-                            // Type column
+                            // Type Column
                             let type_str = file_type_description(&node.name, node.is_dir);
-                            let type_pos = Pos2::new(rect.max.x - 110.0, rect.min.y + 9.0);
-                            let type_galley = ui.painter().layout_no_wrap(
-                                type_str.to_string(),
+                            ui.painter().text(
+                                pos2(rect.max.x - type_col_w, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                type_str,
                                 egui::FontId::proportional(12.0),
                                 COLOR_TEXT_MUTED,
                             );
-                            ui.painter().galley(type_pos, type_galley, COLOR_TEXT_MUTED);
                         }
                     });
             } else {
                 // Nautilus Grid View
                 egui::Frame::none()
                     .fill(COLOR_BG_VIEW)
-                    .inner_margin(egui::Margin::same(12.0))
+                    .inner_margin(egui::Margin::same(16.0))
                     .show(ui, |ui| {
                         let card_width = 110.0;
-                        let card_height = 105.0;
+                        let card_height = 112.0;
                         let spacing = 12.0;
 
                         ui.horizontal_wrapped(|ui| {
@@ -765,10 +776,10 @@ impl KunaiApp {
                                 let (rect, response) = ui.allocate_exact_size(vec2(card_width, card_height), egui::Sense::click());
 
                                 if is_selected {
-                                    ui.painter().rect_filled(rect, Rounding::same(8.0), COLOR_SELECTION_BG);
-                                    ui.painter().rect_stroke(rect, Rounding::same(8.0), Stroke::new(1.0, COLOR_BORDER_ACCENT));
+                                    ui.painter().rect_filled(rect, Rounding::same(9.0), COLOR_SELECTION_BG);
+                                    ui.painter().rect_stroke(rect, Rounding::same(9.0), Stroke::new(1.0, COLOR_BORDER_ACCENT));
                                 } else if response.hovered() {
-                                    ui.painter().rect_filled(rect, Rounding::same(8.0), COLOR_HOVER_BG);
+                                    ui.painter().rect_filled(rect, Rounding::same(9.0), COLOR_HOVER_BG);
                                 }
 
                                 if response.clicked() {
@@ -792,9 +803,9 @@ impl KunaiApp {
                                     }
                                 });
 
-                                // Center Icon
+                                // Center Icon (larger in Grid View)
                                 let icon_rect = Rect::from_center_size(
-                                    Pos2::new(rect.center().x, rect.min.y + 36.0),
+                                    pos2(rect.center().x, rect.min.y + 40.0),
                                     vec2(44.0, 44.0),
                                 );
                                 render_file_icon(ui, icon_rect, node.is_dir, &node.name);
@@ -802,13 +813,13 @@ impl KunaiApp {
                                 // Truncated Name
                                 let name_galley = ui.painter().layout(
                                     node.name.clone(),
-                                    egui::FontId::proportional(11.0),
+                                    egui::FontId::proportional(11.5),
                                     COLOR_TEXT_PRIMARY,
                                     card_width - 12.0,
                                 );
-                                let name_pos = Pos2::new(
+                                let name_pos = pos2(
                                     rect.center().x - name_galley.size().x / 2.0,
-                                    rect.min.y + 66.0,
+                                    rect.min.y + 70.0,
                                 );
                                 ui.painter().galley(name_pos, name_galley, COLOR_TEXT_PRIMARY);
 
@@ -817,10 +828,10 @@ impl KunaiApp {
                                     let size_str = format_bytes(node.size);
                                     let size_galley = ui.painter().layout_no_wrap(
                                         size_str,
-                                        egui::FontId::proportional(9.0),
+                                        egui::FontId::proportional(9.5),
                                         COLOR_TEXT_MUTED,
                                     );
-                                    let size_pos = Pos2::new(
+                                    let size_pos = pos2(
                                         rect.center().x - size_galley.size().x / 2.0,
                                         rect.max.y - 14.0,
                                     );
@@ -968,7 +979,7 @@ impl eframe::App for KunaiApp {
         // Extraction modal
         self.render_extraction_modal(ctx);
 
-        // Repaint if actively extracting or status update
+        // Repaint if actively extracting
         if self.is_extracting {
             ctx.request_repaint();
         }
@@ -979,7 +990,7 @@ impl eframe::App for KunaiApp {
 pub fn run_gui(initial_pkg: Option<PathBuf>) -> Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1040.0, 680.0])
+            .with_inner_size([1060.0, 690.0])
             .with_min_inner_size([760.0, 500.0])
             .with_title("Kunai - PlayStation 4 Package Explorer"),
         ..Default::default()

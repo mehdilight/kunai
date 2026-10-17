@@ -338,21 +338,23 @@ impl VirtualFs {
                                 current_dir.clone()
                             };
 
-                            nodes.push(FsNode {
-                                name: fs_entry.name.clone(),
-                                relative_path: target_path.clone(),
-                                parent_path: parent_p,
-                                is_dir: fs_entry.entry_type == PFS_DIR,
-                                size,
-                                inode: Some(fs_entry.inode),
-                                loc,
-                                blocks,
-                                is_sce_sys: false,
-                                sce_sys_offset: None,
-                                sce_sys_size: None,
-                                sce_sys_id: None,
-                                raw_header: None,
-                            });
+                            if !(fs_entry.entry_type == PFS_DIR && target_path == "sce_sys") {
+                                nodes.push(FsNode {
+                                    name: fs_entry.name.clone(),
+                                    relative_path: target_path.clone(),
+                                    parent_path: parent_p,
+                                    is_dir: fs_entry.entry_type == PFS_DIR,
+                                    size,
+                                    inode: Some(fs_entry.inode),
+                                    loc,
+                                    blocks,
+                                    is_sce_sys: false,
+                                    sce_sys_offset: None,
+                                    sce_sys_size: None,
+                                    sce_sys_id: None,
+                                    raw_header: None,
+                                });
+                            }
 
                             ndinode_counter += 1;
                             if ndinode_counter + 1 == ndinode as usize {
@@ -390,10 +392,22 @@ impl VirtualFs {
 
     /// Lists entries located directly inside `parent_path` (e.g. `""` for root, `"sce_sys"` for sce_sys).
     pub fn list_dir(&self, parent_path: &str) -> Vec<&FsNode> {
-        self.nodes
-            .iter()
-            .filter(|n| n.parent_path == parent_path)
-            .collect()
+        let mut seen = std::collections::HashSet::new();
+        let mut list = Vec::new();
+        for node in &self.nodes {
+            if node.parent_path == parent_path && seen.insert(&node.name) {
+                list.push(node);
+            }
+        }
+        // Folders first, then files alphabetically
+        list.sort_by(|a, b| {
+            match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()),
+            }
+        });
+        list
     }
 
     /// Finds a node by exact relative path.
