@@ -1,4 +1,4 @@
-//! 玉手箱 (Tamatebako) - PlayStation 4 PKG extractor for macOS.
+//! Kunai (苦無) - PlayStation 4 PKG extractor for macOS.
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -8,9 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use tamatebako::cli::Cli;
-use tamatebako::core::pkg::{Pkg, PkgType};
-use tamatebako::platform::{current_platform, Platform};
+use kunai::cli::Cli;
+use kunai::core::pkg::{Pkg, PkgType};
+use kunai::platform::{current_platform, Platform};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -32,8 +32,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
         None => {
             eprintln!(
                 "{}\nRun {} for usage details.",
-                "玉手箱 (Tamatebako) - No PKG file or directory specified.".yellow(),
-                "tamatebako --help".bold().cyan()
+                "Kunai - No PKG file or directory specified.".yellow(),
+                "kunai --help".bold().cyan()
             );
             return Ok(ExitCode::from(1));
         }
@@ -90,8 +90,7 @@ fn run_single(cli: &Cli, platform: &dyn Platform, pkg_path: &Path) -> Result<Exi
             cli.addons_dir.as_deref(),
         );
         println!(
-            "{} Installing directly into shadPS4 directory: {}",
-            "🎮".green(),
+            "Installing directly into shadPS4 directory: {}",
             dir.display().to_string().cyan()
         );
         dir
@@ -104,8 +103,7 @@ fn run_single(cli: &Cli, platform: &dyn Platform, pkg_path: &Path) -> Result<Exi
     };
 
     println!(
-        "{} {} [{}] -> {}",
-        "📦".cyan(),
+        "[{}] [{}] -> {}",
         pkg_path.file_name().and_then(|n| n.to_str()).unwrap_or("PKG"),
         pkg_type.description().yellow(),
         target_dir.display().to_string().bold()
@@ -128,8 +126,7 @@ fn run_single(cli: &Cli, platform: &dyn Platform, pkg_path: &Path) -> Result<Exi
     pb.finish_with_message("Done!".green().to_string());
 
     println!(
-        "{} Successfully extracted to: {}",
-        "✨".green(),
+        "Successfully extracted to: {}",
         destination.display().to_string().bold().green()
     );
 
@@ -141,7 +138,7 @@ fn run_single(cli: &Cli, platform: &dyn Platform, pkg_path: &Path) -> Result<Exi
 
     if cli.notify {
         let msg = format!("Extracted {} ({})", title_id, pkg_type.description());
-        let _ = platform.send_notification("玉手箱 (Tamatebako)", &msg);
+        let _ = platform.send_notification("Kunai", &msg);
     }
 
     Ok(ExitCode::SUCCESS)
@@ -149,8 +146,7 @@ fn run_single(cli: &Cli, platform: &dyn Platform, pkg_path: &Path) -> Result<Exi
 
 fn run_batch(cli: &Cli, platform: &dyn Platform, dir_path: &Path) -> Result<ExitCode> {
     println!(
-        "{} Scanning directory for .pkg files: {}",
-        "📂".cyan(),
+        "Scanning directory for .pkg files: {}",
         dir_path.display()
     );
 
@@ -176,8 +172,7 @@ fn run_batch(cli: &Cli, platform: &dyn Platform, dir_path: &Path) -> Result<Exit
 
     for (idx, pkg_file) in pkg_files.iter().enumerate() {
         println!(
-            "{} [{}/{}] Processing: {}",
-            "---".dimmed(),
+            "[{}/{}] Processing: {}",
             idx + 1,
             pkg_files.len(),
             pkg_file.file_name().and_then(|n| n.to_str()).unwrap_or("")
@@ -191,7 +186,7 @@ fn run_batch(cli: &Cli, platform: &dyn Platform, dir_path: &Path) -> Result<Exit
 
     if cli.notify {
         let _ = platform.send_notification(
-            "玉手箱 (Tamatebako)",
+            "Kunai",
             &format!("Batch extraction finished ({} packages)", pkg_files.len()),
         );
     }

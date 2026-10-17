@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "tamatebako",
+    name = "kunai",
     version,
-    about = "玉手箱 (Tamatebako) - Native macOS PlayStation 4 PKG extractor & shadPS4 installer",
+    about = "Kunai (苦無) - Native macOS PlayStation 4 PKG extractor & shadPS4 installer",
     long_about = "A blazing-fast, Apple Silicon native PS4 PKG extractor and shadPS4 package installer.\n\
                   Supports automatic type detection (Base Game, Patch, DLC), cryptographic unpacking,\n\
                   and direct installation into macOS shadPS4 directories."

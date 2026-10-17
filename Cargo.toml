@@ -1,12 +1,12 @@
 [package]
-name = "tamatebako"
+name = "kunai"
 version = "0.1.0"
 edition = "2021"
 authors = ["Mehdi <mehdilight>"]
 description = "High-performance PlayStation 4 PKG extractor & shadPS4 installer for macOS (Apple Silicon native), built in Rust with extensible multi-OS architecture."
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-keywords = ["ps4", "pkg", "extractor", "shadps4", "macos"]
+keywords = ["ps4", "pkg", "extractor", "shadps4", "macos", "kunai"]
 categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]

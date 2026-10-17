@@ -1,87 +1,106 @@
-# 玉手箱 (Tamatebako) 📦✨
+# Kunai (苦無)
 
-[![macOS](https://img.shields.io/badge/Platform-macOS%20(Apple%20Silicon%20%26%20Intel)-black?logo=apple)](https://apple.com)
-[![Rust](https://img.shields.io/badge/Language-Rust%202021-orange?logo=rust)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue)](LICENSE)
+[![macOS](https://img.shields.io/badge/Platform-macOS%20(Apple%20Silicon%20%26%20Intel)-black)](https://apple.com)
+[![Rust](https://img.shields.io/badge/Language-Rust%202021-orange)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
 
-**Tamatebako (玉手箱)** — named after the legendary sealed treasure box of Japanese folklore — is a high-performance, native **macOS PlayStation 4 PKG extractor and shadPS4 installer** written in pure Rust.
+Kunai (苦無) is a high-performance, native macOS PlayStation 4 PKG extractor and shadPS4 package installer written in Rust.
 
-It implements the cryptographic unpacking and PFS file extraction algorithm used in [shadPS4](https://github.com/shadps4-emu/shadPS4) and [shadPS4Plus](https://github.com/AzaharPlus/shadPS4Plus), natively compiled for Apple Silicon with zero external C/C++ dependencies.
+Named after the traditional Japanese tool used for wedging, prying, and cutting, Kunai decrypts and unpacks PlayStation 4 `.pkg` containers natively on macOS with zero external C/C++ dependencies.
 
 ---
 
-## 🌟 Highlights
+## Overview
 
-* **🍎 Apple Silicon Native**: Optimized for ARM64 (`aarch64-apple-darwin`) utilizing hardware-accelerated AES and SHA instructions.
-* **🔑 Full Cryptographic Parity**:
+ShadPS4Plus provided extraction tools primarily packaged for Windows (`.exe`) and Linux (`.AppImage`). Kunai brings complete extraction and decryption parity to macOS with native Apple Silicon optimization, full cryptographic support, and direct integration with shadPS4's directory structure.
+
+### Key Capabilities
+
+* **Apple Silicon Native**: Built for ARM64 (`aarch64-apple-darwin`), taking advantage of ARMv8 hardware cryptography acceleration for AES and SHA256.
+* **Full Cryptographic Parity**:
   * Decrypts fake PKG (FPKG) entry keys via RSA-2048 PKCS#1 v1.5 (`dk3` and `ekpfs`).
-  * AES-128-CBC decryption for `sce_sys` license and NP files (`license.dat`, `license.info`, `nptitle.dat`, `npbind.dat`).
-  * AES-128-XTS sector-by-sector decryption for the PFS outer image and inner files.
-  * Inode and Dirent flat-path directory tree reconstruction with zlib decompression.
-* **🎮 Smart shadPS4 Integration**:
-  * Resolves macOS user directories automatically (`~/Library/Application Support/shadPS4`).
-  * Reads shadPS4's `config.toml` to honor custom game and addon paths.
-  * Automatically routes packages to their correct destination:
-    * **Base Games** (`101`) ➔ `games/<TITLE_ID>/`
-    * **Game Updates / Patches** (`102`) ➔ `games/<TITLE_ID>-patch/`
-    * **DLCs / Add-ons** (`103`) ➔ `user/addcont/<TITLE_ID>/<ENTITLEMENT_LABEL>/`
-* **🖥️ macOS System Enhancements**:
-  * `--reveal` (`-r`): Automatically opens the destination directory in Finder.
-  * `--notify`: Sends macOS system banners and chime sounds upon completion.
-* **🧩 Multi-OS Extensible Architecture**: Designed using the **Strategy Pattern** (`Platform` trait). While focused on macOS, implementations for Linux (XDG) and Windows are readily pluggable.
+  * AES-128-CBC decryption for `sce_sys` NP files (`license.dat`, `license.info`, `nptitle.dat`, `npbind.dat`).
+  * AES-128-XTS sector decryption for the PFS filesystem and nested files.
+  * Inode and Dirent directory tree reconstruction with zlib decompression.
+* **Automated shadPS4 Routing**:
+  * Automatically resolves `~/Library/Application Support/shadPS4`.
+  * Reads shadPS4's `config.toml` to respect custom paths set in emulator preferences.
+  * Routes files to their standard locations based on package type:
+    * **Base Games** (exit code 101): `games/<TITLE_ID>/`
+    * **Game Updates / Patches** (exit code 102): `games/<TITLE_ID>-patch/`
+    * **DLCs / Add-on Content** (exit code 103): `user/addcont/<TITLE_ID>/<ENTITLEMENT_LABEL>/`
+* **macOS Integration**:
+  * `--reveal` (`-r`): Automatically reveals the extracted directory in Finder.
+  * `--notify`: Dispatches native macOS notification banners upon task completion.
+* **Extensible Multi-OS Architecture**: Built around a clean Strategy Pattern (`Platform` trait) that isolates OS-specific behavior, allowing Linux and Windows support to be maintained without altering core extraction logic.
 
 ---
 
-## 🚀 Installation & Building
+## Installation & Building
 
 ### Prerequisites
-* Rust 1.80+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
-* macOS 12+ (Apple Silicon M1/M2/M3/M4 or Intel)
 
-### Build from source
+* Rust 1.80 or later (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
+* macOS 12 or later (Apple Silicon M1/M2/M3/M4 or Intel x86_64)
+
+### Building from Source
+
 ```bash
-git clone git@github.com:mehdilight/tamatebako.git
-cd tamatebako
+git clone git@github.com:mehdilight/kunai.git
+cd kunai
 cargo build --release
 ```
-The optimized binary will be created at `./target/release/tamatebako`.
 
-You can install it globally to your path via:
+The compiled binary will be placed at `./target/release/kunai`.
+
+To install it into your Cargo bin directory (accessible from any terminal session):
+
 ```bash
 cargo install --path .
 ```
 
 ---
 
-## 📖 Usage
+## Command-Line Usage
 
-### 1. Extract a PKG to a directory
+### 1. Extract a PKG to a Specific Directory
+
 ```bash
-tamatebako Game.pkg /path/to/output
+kunai Game.pkg /path/to/destination
 ```
-*If no output directory is specified, it extracts next to the PKG file.*
 
-### 2. Install directly into shadPS4 on macOS
+If no destination is specified, Kunai extracts into a subfolder next to the source `.pkg` file.
+
+### 2. Install Directly into shadPS4
+
 ```bash
-tamatebako -i Game.pkg
+kunai -i Game.pkg
 ```
-Tamatebako inspects the `param.sfo` and flags, determines whether it is a base game, update, or DLC, and places it directly into your `~/Library/Application Support/shadPS4` directories!
 
-### 3. Check PKG Type (Matches shadPS4Plus CLI exit codes)
+Kunai inspects the package header and `param.sfo`, determines whether it is a base game, update patch, or DLC, and places it directly into your `~/Library/Application Support/shadPS4` directory.
+
+### 3. Detect Package Type
+
+Matches shadPS4Plus CLI exit codes:
+
 ```bash
-tamatebako --check-type Game.pkg
+kunai --check-type Game.pkg
 echo $?
 ```
+
 * Exit code `101`: Base Game
 * Exit code `102`: Game Update / Patch
 * Exit code `103`: DLC / Add-on Content
 
-### 4. Inspect Package Information
+### 4. Display Package Metadata
+
 ```bash
-tamatebako --info Game.pkg
+kunai --info Game.pkg
 ```
-Output:
-```
+
+Example output:
+
+```text
 === Package Information ===
 Title ID          : CUSA00001
 Package Type      : Base Game
@@ -96,30 +115,56 @@ App Version       : 01.00
 Version           : 01.00
 ```
 
-### 5. Batch Extract an Entire Directory
+### 5. Batch Process an Entire Directory
+
 ```bash
-tamatebako --batch /path/to/folder/with/pkgs
+kunai --batch /path/to/pkg/folder
 ```
 
 ### 6. Reveal in Finder and Notify upon Completion
+
 ```bash
-tamatebako -i -r --notify Game.pkg
+kunai -i -r --notify Game.pkg
 ```
 
 ---
 
-## 📐 Architecture & Design Pattern
+## CLI Reference
 
+```text
+Usage: kunai [OPTIONS] [PKG_PATH] [OUTPUT_DIR]
+
+Arguments:
+  [PKG_PATH]    Path to the .pkg file or directory (when using --batch)
+  [OUTPUT_DIR]  Destination directory for extracted contents
+
+Options:
+      --check-type             Detect and return PKG type exit code (101=game, 102=patch, 103=dlc)
+  -i, --install                Install directly into shadPS4 directory
+  -b, --batch                  Batch process all .pkg files in a directory
+      --info                   Print detailed package metadata without extracting
+  -r, --reveal                 Reveal output in Finder after extraction
+      --notify                 Send desktop notification when extraction completes
+      --games-dir <GAMES_DIR>  Override custom games directory
+      --addons-dir <ADDONS_DIR> Override custom addons directory
+  -h, --help                   Print help
+  -V, --version                Print version
 ```
-tamatebako/
+
+---
+
+## Project Structure
+
+```text
+kunai/
 ├── Cargo.toml
 ├── src/
-│   ├── main.rs                  # CLI driver and progress bar rendering
-│   ├── lib.rs                   # Library crate entry
-│   ├── cli.rs                   # Clap CLI definition
-│   ├── core/                    # OS-agnostic extraction algorithms
+│   ├── main.rs                  # CLI entry point and progress bar driver
+│   ├── lib.rs                   # Library root
+│   ├── cli.rs                   # Command-line interface definitions
+│   ├── core/                    # OS-agnostic core algorithms
 │   │   ├── pkg.rs               # PKG container reader and type detector
-│   │   ├── psf.rs               # PSF (param.sfo) parser
+│   │   ├── psf.rs               # PSF (param.sfo) format parser
 │   │   ├── pfs.rs               # PFS/PFSC filesystem and Inode/Dirent tree
 │   │   ├── entry_types.rs       # Canonical sce_sys file ID mappings
 │   │   └── crypto/              # Cryptographic subsystem
@@ -127,26 +172,39 @@ tamatebako/
 │   │       ├── rsa.rs           # RSA-2048 PKCS#1 v1.5 decryption
 │   │       ├── aes.rs           # AES-128-CBC decryption
 │   │       ├── xts.rs           # AES-128-XTS sector decryption
-│   │       └── kdf.rs           # HMAC-SHA256 & SHA-256 derivation
+│   │       └── kdf.rs           # HMAC-SHA256 and SHA-256 derivation
 │   └── platform/                # Platform Strategy Pattern
-│       ├── mod.rs               # Platform trait and factory
+│       ├── mod.rs               # Platform trait and current_platform() factory
 │       ├── macos.rs             # macOS implementation (Application Support, Finder, notifications)
 │       ├── linux.rs             # Linux implementation (XDG specification)
 │       └── windows.rs           # Windows implementation (APPDATA)
 ```
 
-### Adding New Operating Systems
-To add another platform (e.g. FreeBSD):
-1. Implement the `Platform` trait in `src/platform/freebsd.rs`.
-2. Register the target in `src/platform/mod.rs` inside `current_platform()`.
-All core cryptographic and unpacking routines will work out of the box.
+### Adding New Platforms
+
+The `Platform` trait abstracts all OS-dependent paths and system tools:
+
+```rust
+pub trait Platform: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn os_type(&self) -> OsType;
+    fn default_shadps4_dir(&self) -> Option<PathBuf>;
+    fn default_games_dir(&self) -> Option<PathBuf>;
+    fn default_addons_dir(&self) -> Option<PathBuf>;
+    fn reveal_in_file_manager(&self, path: &Path) -> Result<()>;
+    fn send_notification(&self, title: &str, message: &str) -> Result<()>;
+}
+```
+
+New platforms (such as FreeBSD) can be added simply by implementing this trait in `src/platform/` and registering the target in `src/platform/mod.rs`.
 
 ---
 
-## 📜 License
+## License
 
-Licensed under either of:
+Dual-licensed under either:
+
 * Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-* MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+* MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
